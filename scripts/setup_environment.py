@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """AndroidForge — Toolchain Setup.
 
@@ -428,7 +427,9 @@ def _inject_repositories(
             index += 1
 
         if depth:
-            applied.append(f"Skipped repository injection in {path}: unmatched braces")
+            applied.append(
+                f"Skipped repository injection in {path}: unmatched braces"
+            )
             continue
 
         close_index = index - 1
@@ -490,9 +491,13 @@ def apply_fixes(
                     wrapper_properties.write_text(
                         updated, encoding="utf-8"
                     )
-                    applied.append("Migrated Gradle distribution URL to HTTPS")
+                    applied.append(
+                        "Migrated Gradle distribution URL to HTTPS"
+                    )
             except OSError as exc:
-                applied.append(f"Could not update wrapper properties: {exc}")
+                applied.append(
+                    f"Could not update wrapper properties: {exc}"
+                )
 
         elif name == "inject_local_properties":
             path = root / "local.properties"
@@ -518,9 +523,13 @@ def apply_fixes(
                     content += sdk_line + "\n"
 
                 path.write_text(content, encoding="utf-8")
-                applied.append("Ensured Android SDK path in local.properties")
+                applied.append(
+                    "Ensured Android SDK path in local.properties"
+                )
             except OSError as exc:
-                applied.append(f"Could not update local.properties: {exc}")
+                applied.append(
+                    f"Could not update local.properties: {exc}"
+                )
 
         elif name == "patch_gradle_wrapper":
             applied.append(
@@ -552,7 +561,9 @@ def apply_fixes(
     _inject_repositories(
         root,
         applied,
-        is_flutter=bool((detect.get("flutter") or {}).get("is_flutter")),
+        is_flutter=bool(
+            (detect.get("flutter") or {}).get("is_flutter")
+        ),
     )
 
     return applied
@@ -681,7 +692,8 @@ def main() -> int:
         kotlin_version = versions.get("kotlin_version")
 
         agp_jdk = pick_jdk_for_agp(
-            str(agp) if agp else None, rules
+            str(agp) if agp else None,
+            rules,
         )
         gradle_jdk = pick_jdk_for_gradle(
             str(wrapper_gradle) if wrapper_gradle else None,
@@ -701,12 +713,22 @@ def main() -> int:
         else:
             chosen_jdk = "8"
 
-        chosen_gradle = (
-            str(wrapper_gradle)
-            if wrapper_gradle
-            else pick_gradle_for_agp(
-                str(agp) if agp else None, rules
-            ) or "8.0"
+        # Choose a compatible Gradle version.
+        # An outdated wrapper must not override AGP requirements.
+        def version_tuple(
+            value: str | int | None,
+        ) -> tuple[int, int, int]:
+            parts = [
+                int(part)
+                for part in re.findall(
+                    r"\d+", str(value or "")
+                )[:3]
+            ]
+            return tuple((parts + [0, 0, 0])[:3])
+
+        required_gradle = pick_gradle_for_agp(
+            str(agp) if agp else None,
+            rules,
         )
 
         wrapper_script = root / (
@@ -716,11 +738,35 @@ def main() -> int:
             root / "gradle" / "wrapper" / "gradle-wrapper.jar"
         )
 
-        use_wrapper = (
+        wrapper_usable = (
             bool(wrapper.get("present"))
+            and bool(wrapper_gradle)
             and wrapper_script.is_file()
             and wrapper_jar.is_file()
         )
+
+        wrapper_too_old = (
+            wrapper_usable
+            and bool(required_gradle)
+            and version_tuple(wrapper_gradle)
+            < version_tuple(required_gradle)
+        )
+
+        # Use the wrapper only when complete and not too old.
+        use_wrapper = wrapper_usable and not wrapper_too_old
+
+        if use_wrapper:
+            chosen_gradle = str(wrapper_gradle)
+        else:
+            chosen_gradle = (
+                required_gradle
+                or (
+                    str(wrapper_gradle)
+                    if wrapper_gradle
+                    else None
+                )
+                or "8.0"
+            )
 
         needs_flutter = bool(
             (detect.get("flutter") or {}).get("is_flutter")
@@ -740,7 +786,9 @@ def main() -> int:
 
         fixes = determine_legacy_fixes(detect, rules)
         applied_fixes = apply_fixes(
-            detect, fixes, args.android_sdk
+            detect,
+            fixes,
+            args.android_sdk,
         )
 
         if needs_flutter:
@@ -751,7 +799,9 @@ def main() -> int:
             ]
         else:
             gradle_command = (
-                str(wrapper_script) if use_wrapper else "gradle"
+                str(wrapper_script)
+                if use_wrapper
+                else "gradle"
             )
             prep_commands = []
             build_commands = [
@@ -784,10 +834,12 @@ def main() -> int:
         if args.output:
             output_path = Path(args.output).expanduser()
             output_path.parent.mkdir(
-                parents=True, exist_ok=True
+                parents=True,
+                exist_ok=True,
             )
             output_path.write_text(
-                output + "\n", encoding="utf-8"
+                output + "\n",
+                encoding="utf-8",
             )
         else:
             print(output)
