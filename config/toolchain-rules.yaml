@@ -1,153 +1,112 @@
-# AndroidForge Toolchain Rules
-# ---------------------------------------------------------------------------
-# This file is the SINGLE SOURCE OF TRUTH for version compatibility mappings.
-# Update this file to add support for new Android Gradle Plugin (AGP) versions,
-# new Gradle versions, new JDK versions, or new Flutter versions.
-#
-# The scripts/setup_environment.py script reads this file at runtime and
-# decides which toolchain versions to install for a given project. The rules
-# are intentionally modular — each top-level key is an independent dimension
-# (JDK, Gradle, AGP, etc.) so you can extend one without touching the others.
-# ---------------------------------------------------------------------------
+AndroidForge Toolchain Rules
 
-# Mapping: AGP version -> required Gradle version range
-# Used when the project does NOT bundle a usable Gradle wrapper, or when
-# the bundled wrapper is too old to run on the GitHub runner.
-#
-# Reference: https://developer.android.com/build/releases/gradle-plugin
+Single source of truth for Android build compatibility.
+
+Android Gradle Plugin to minimum compatible Gradle versions.
+
 agp_to_gradle:
-  "8.7": "8.9"
-  "8.6": "8.7"
-  "8.5": "8.7"
-  "8.4": "8.6"
-  "8.3": "8.4"
-  "8.2": "8.2"
-  "8.1": "8.0"
-  "8.0": "8.0"
-  "7.4": "7.5"
-  "7.3": "7.4"
-  "7.2": "7.3.3"
-  "7.1": "7.2"
-  "7.0": "7.0.2"
-  "4.2": "6.7.1"
-  "4.1": "6.5"
-  "4.0": "6.1.1"
-  "3.6": "5.6.4"
-  "3.5": "5.4.1"
-  "3.4": "5.1.1"
-  "3.3": "4.10.1"
-  "3.2": "4.6"
-  "3.1": "4.4"
-  "3.0": "4.1"
-  "2.3": "3.3"
+"9.0": "9.1.0"
+"8.13": "8.13"
+"8.12": "8.13"
+"8.11": "8.13"
+"8.10": "8.11.1"
+"8.9": "8.11.1"
+"8.8": "8.10.2"
+"8.7": "8.9"
+"8.6": "8.7"
+"8.5": "8.7"
+"8.4": "8.6"
+"8.3": "8.4"
+"8.2": "8.2"
+"8.1": "8.0"
+"8.0": "8.0"
+"7.4": "7.5"
+"7.3": "7.4"
+"7.2": "7.3.3"
+"7.1": "7.2"
+"7.0": "7.0"
 
-# Mapping: AGP version -> required JDK version
-# AGP 8.x requires JDK 17. AGP 7.x works with JDK 11. Older AGPs work with JDK 8.
+Android Gradle Plugin to required JDK versions.
+
 agp_to_jdk:
-  "8.x": "17"
-  "7.x": "11"
-  "4.x": "11"
-  "3.x": "8"
-  "2.x": "8"
+"9.x": "17"
+"8.x": "17"
+"7.x": "11"
+"4.x": "11"
+"3.x": "8"
 
-# Mapping: Gradle version -> required JDK version (Gradle's own requirement).
-# Reference: https://docs.gradle.org/current/userguide/compatibility.html
-gradle_to_jdk:
-  "8.x": "17"
-  "7.x": "11"
-  "6.x": "8"
-  "5.x": "8"
-  "4.x": "8"
+Default Android SDK components.
 
-# Mapping: Kotlin version -> required JDK version
-kotlin_to_jdk:
-  "1.9.x": "11"
-  "1.8.x": "11"
-  "1.7.x": "11"
-  "1.6.x": "8"
-  "1.5.x": "8"
-  "1.4.x": "8"
-  "1.3.x": "8"
-
-# Flutter SDK version to install when a Flutter project is detected.
-# Pinned to a recent stable release for reproducibility.
-flutter:
-  default_version: "3.24.0"
-  # Flutter channel to install from
-  channel: "stable"
-  # JDK to use for Flutter Android builds (Flutter uses Gradle under the hood)
-  jdk: "17"
-
-# NDK default version to install when a project uses native C/C++ code.
-# Override per-project if the build.gradle specifies a different ndkVersion.
-ndk:
-  default_version: "26.1.10909125"
-  legacy_versions:
-    - "25.2.9519653"
-    - "23.2.8568313"
-    - "21.4.7075529"
-
-# Android SDK components to install by default.
 android_sdk:
-  platforms:
-    - "platform-34"
-    - "platform-33"
-    - "platform-31"
-    - "platform-30"
-    - "platform-29"
-    - "platform-28"
-    - "platform-27"
-    - "platform-26"
-    - "platform-25"
-    - "platform-24"
-    - "platform-23"
-  build_tools:
-    - "34.0.0"
-    - "33.0.2"
-    - "32.0.0"
-    - "31.0.0"
-    - "30.0.3"
-    - "29.0.3"
-    - "28.0.3"
-    - "27.0.3"
-  extras:
-    - "android;m2repository"
-    - "google;m2repository"
+platforms:
+- "platform-35"
+- "platform-34"
+- "platform-33"
+- "platform-31"
+- "platform-30"
+- "platform-29"
+- "platform-28"
+build_tools:
+- "36.0.0"
+- "35.0.0"
+- "34.0.0"
+- "33.0.2"
+- "32.0.0"
+- "30.0.3"
+extras:
+- "android;m2repository"
+- "google;m2repository"
 
-# Legacy compatibility tweaks applied to the build workspace (never to the
-# source ZIP). Each entry is a list of fixes that the setup script may apply
-# when the corresponding legacy indicator is detected.
+Legacy Android NDK versions.
+
+ndk:
+default_version: "26.1.10909125"
+legacy_versions:
+- "25.2.9519653"
+- "23.2.8568313"
+- "21.4.7075529"
+
+Default Flutter version.
+
+flutter:
+default_version: "3.24.0"
+
+Legacy compatibility fixes.
+
 legacy_fixes:
-  - name: "patch_gradle_wrapper"
-    description: "Regenerate gradle-wrapper.jar if the bundled one is corrupt or missing"
-    applies_when: "wrapper_corrupt_or_missing"
-  - name: "disable_gradle_daemon"
-    description: "Set org.gradle.daemon=false for very old Gradle versions (<4)"
-    applies_when: "gradle_version < 4"
-  - name: "use_system_gradle"
-    description: "Bypass the bundled wrapper and use a system-installed Gradle of compatible version"
-    applies_when: "wrapper_incompatible_with_runner"
-  - name: "migrate_https"
-    description: "Rewrite http:// distribution URLs to https:// (older wrappers refuse HTTPS-only servers)"
-    applies_when: "wrapper_url_http"
-  - name: "inject_local_properties"
-    description: "Create local.properties with sdk.dir if missing"
-    applies_when: "no_local_properties"
-  - name: "add_google_maven"
-    description: "Insert google() and mavenCentral() into repositories if missing"
-    applies_when: "missing_repositories"
 
-# Default build variants to try, in order. The build script will attempt each
-# until one succeeds or all fail.
+- name: "patch_gradle_wrapper"
+  description: "Regenerate missing or corrupt Gradle wrapper files"
+  applies_when: "wrapper_corrupt_or_missing"
+- name: "disable_gradle_daemon"
+  description: "Disable the Gradle daemon for very old versions"
+  applies_when: "gradle_version < 4"
+- name: "use_system_gradle"
+  description: "Use a compatible system Gradle when the wrapper is unavailable"
+  applies_when: "wrapper_incompatible_with_runner"
+- name: "migrate_https"
+  description: "Convert HTTP distribution URLs to HTTPS"
+  applies_when: "wrapper_url_http"
+- name: "inject_local_properties"
+  description: "Create local.properties with the Android SDK path"
+  applies_when: "no_local_properties"
+- name: "add_google_maven"
+  description: "Ensure required Maven repositories are configured"
+  applies_when: "missing_repositories"
+
+Build variants to attempt.
+
 build_variants:
-  - "assembleDebug"
-  - "assembleRelease"
-  - "bundleDebug"
 
-# Network/dependency fallbacks
+- "assembleDebug"
+- "assembleRelease"
+- "bundleDebug"
+
+Dependency repositories.
+
 dependency_fallbacks:
-  # If a dependency cannot be resolved on mavenCentral, try these mirrors
-  - "https://maven.google.com"
-  - "https://repo1.maven.org/maven2"
-  - "https://plugins.gradle.org/m2"
-  - "https://jitpack.io"
+
+- "https://maven.google.com"
+- "https://repo.maven.apache.org/maven2"
+- "https://plugins.gradle.org/m2"
+- "https://jitpack.io"
