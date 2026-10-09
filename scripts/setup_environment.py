@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """AndroidForge — Toolchain Setup.
 
@@ -36,17 +37,12 @@ def load_rules(path: Path | None = None) -> dict[str, Any]:
     try:
         data = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ValueError(
-            f"Cannot read toolchain rules '{rules_path}': {exc}"
-        ) from exc
+        raise ValueError(f"Cannot read rules '{rules_path}': {exc}") from exc
     except yaml.YAMLError as exc:
-        raise ValueError(
-            f"Invalid YAML in '{rules_path}': {exc}"
-        ) from exc
+        raise ValueError(f"Invalid YAML in '{rules_path}': {exc}") from exc
 
     if data is None:
         return {}
-
     if not isinstance(data, dict):
         raise ValueError("Toolchain rules must contain a YAML mapping.")
 
@@ -63,87 +59,68 @@ def minor(version: str | int | None) -> int:
     return int(parts[1]) if len(parts) > 1 else 0
 
 
-def _version_rule(
-    version: str | None,
-    mapping: dict,
-) -> str | None:
+def version_tuple(value: str | int | None) -> tuple[int, ...]:
+    parts = [
+        int(part)
+        for part in re.findall(r"\d+", str(value or ""))[:4]
+    ]
+    return tuple(parts)
+
+
+def _version_rule(version: str | None, mapping: dict) -> str | None:
     """Return the most specific matching version rule."""
     if not version:
         return None
 
     matches = []
-
     for pattern, value in mapping.items():
         pattern = str(pattern)
 
         if pattern.endswith(".x"):
             prefix = pattern[:-2]
-            matched = (
-                version == prefix
-                or version.startswith(prefix + ".")
-            )
+            matched = version == prefix or version.startswith(prefix + ".")
         else:
-            matched = (
-                version == pattern
-                or version.startswith(pattern + ".")
-            )
+            matched = version == pattern or version.startswith(pattern + ".")
 
         if matched:
             matches.append((len(pattern), str(value)))
 
-    if not matches:
-        return None
-
-    return max(matches, key=lambda item: item[0])[1]
+    return max(matches, key=lambda item: item[0])[1] if matches else None
 
 
-def pick_jdk_for_agp(
-    agp: str | None,
-    rules: dict[str, Any],
-) -> str:
+def pick_jdk_for_agp(agp: str | None, rules: dict[str, Any]) -> str:
     if not agp:
         return "17"
 
     configured = _version_rule(
-        str(agp),
-        rules.get("agp_to_jdk", {}) or {},
+        str(agp), rules.get("agp_to_jdk", {}) or {}
     )
-
     if configured:
         return configured
 
     version = major(agp)
-
     if version >= 8:
         return "17"
     if version >= 7:
         return "11"
-
     return "8"
 
 
-def pick_jdk_for_gradle(
-    gradle: str | None,
-    rules: dict[str, Any],
-) -> str:
+def pick_jdk_for_gradle(gradle: str | None, rules: dict[str, Any]) -> str:
     if gradle:
         configured = _version_rule(
-            str(gradle),
-            rules.get("gradle_to_jdk", {}) or {},
+            str(gradle), rules.get("gradle_to_jdk", {}) or {}
         )
-
         if configured:
             return configured
 
     version = major(gradle)
-
     if version >= 8:
         return "17"
     if version == 7:
         return "11"
     if 0 < version <= 6:
         return "8"
-
     return "17"
 
 
@@ -151,6 +128,7 @@ def pick_gradle_for_agp(
     agp: str | None,
     rules: dict[str, Any],
 ) -> str | None:
+    """Resolve the most specific AGP-to-Gradle mapping."""
     if not agp:
         return None
 
@@ -161,59 +139,110 @@ def pick_gradle_for_agp(
         return str(mapping[agp])
 
     parts = agp.split(".")
-
     for length in range(len(parts) - 1, 0, -1):
         prefix = ".".join(parts[:length])
-
         if prefix in mapping:
             return str(mapping[prefix])
-
-    same_major = [
-        str(value)
-        for key, value in mapping.items()
-        if major(key) == major(agp)
-    ]
-
-    if len(set(same_major)) == 1 and same_major:
-        return same_major[0]
 
     return None
 
 
-def pick_flutter_version(
-    detect: dict,
-    rules: dict,
-) -> str:
+def detect_agp_version(root: Path, detect: dict) -> str | None:
+    """Find AGP version in detection data or common Gradle files."""
+    versions = detect.get("versions") or {}
+    existing = versions.get("agp_version")
+
+    if existing:
+        match = re.search(r"\d+\.\d+(?:\.\d+)?", str(existing))
+        if match:
+            return match.group()
+
+    files = [
+        root / "settings.gradle",
+        root / "settings.gradle.kts",
+        root / "build.gradle",
+        root / "build.gradle.kts",
+        root / "buildSrc" / "build.gradle",
+        root / "buildSrc" / "build.gradle.kts",
+        root / "gradle" / "libs.versions.toml",
+        root / "app" / "build.gradle",
+        root / "app" / "build.gradle.kts",
+    ]
+
+    patterns = [
+        r"""com\.android\.application["']?\s*(?:version\s*)?["']?\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)""",
+        r"""com\.android\.tools\.build:gradle:([0-9]+\.[0-9]+(?:\.[0-9]+)?)""",
+        r"""(?:agp|androidGradlePlugin)\s*=\s*["']([0-9]+\.[0-9]+(?:\.[0-9]+)?)["']""",
+        r"""(?:agp|androidGradlePlugin)\s*=\s*\{\s*[^}]*version\s*=\s*["']([0-9]+\.[0-9]+(?:\.[0-9]+)?)["']""",
+        r"""id\s*\(\s*["']com\.android\.application["']\s*\)\s*version\s*["']([0-9]+\.[0-9]+(?:\.[0-9]+)?)["']""",
+        r"""id\s+["']com\.android\.application["']\s+version\s+["']([0-9]+\.[0-9]+(?:\.[0-9]+)?)["']""",
+    ]
+
+    found = []
+    for path in files:
+        if not path.is_file():
+            continue
+
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, content):
+                found.append(match.group(1))
+
+    # Also inspect version-catalog aliases for AGP.
+    catalog = root / "gradle" / "libs.versions.toml"
+    if catalog.is_file():
+        try:
+            content = catalog.read_text(encoding="utf-8", errors="replace")
+            lines = content.splitlines()
+            in_versions = False
+
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("["):
+                    in_versions = stripped == "[versions]"
+                    continue
+
+                if in_versions and re.search(
+                    r"\b(?:agp|androidGradlePlugin)\s*=", stripped
+                ):
+                    match = re.search(
+                        r"""=\s*["'](\d+\.\d+(?:\.\d+)?)["']""",
+                        stripped,
+                    )
+                    if match:
+                        found.append(match.group(1))
+        except OSError:
+            pass
+
+    if not found:
+        return None
+
+    # Prefer the highest detected stable version if multiple files contain it.
+    return max(found, key=version_tuple)
+
+
+def pick_flutter_version(detect: dict, rules: dict) -> str:
     flutter = detect.get("flutter") or {}
     constraint = flutter.get("flutter_version_constraint")
 
     if constraint:
         match = re.search(r"(\d+\.\d+\.\d+)", str(constraint))
-
         if match:
             return match.group(1)
 
-    return str(
-        (rules.get("flutter") or {}).get(
-            "default_version", "3.24.0"
-        )
-    )
+    return str((rules.get("flutter") or {}).get("default_version", "3.24.0"))
 
 
-def pick_ndk_version(
-    detect: dict,
-    rules: dict,
-) -> str:
+def pick_ndk_version(detect: dict, rules: dict) -> str:
     version = (detect.get("versions") or {}).get("ndk_version")
-
     if version:
         return str(version)
 
-    return str(
-        (rules.get("ndk") or {}).get(
-            "default_version", "26.1.10909125"
-        )
-    )
+    return str((rules.get("ndk") or {}).get("default_version", "26.1.10909125"))
 
 
 def determine_legacy_fixes(
@@ -260,13 +289,9 @@ def _ensure_gradle_properties(
     label: str,
     applied: list[str],
 ) -> None:
-    """Preserve existing settings while adding missing compatibility flags."""
+    """Preserve existing settings while adding compatibility defaults."""
     try:
-        original = (
-            path.read_text(encoding="utf-8")
-            if path.exists()
-            else ""
-        )
+        original = path.read_text(encoding="utf-8") if path.exists() else ""
     except OSError as exc:
         applied.append(f"Could not read {label}: {exc}")
         return
@@ -275,25 +300,19 @@ def _ensure_gradle_properties(
     additions = []
 
     jvm_match = re.search(
-        r"(?m)^(\s*org\.gradle\.jvmargs\s*=\s*)(.*)$",
-        content,
+        r"(?m)^(\s*org\.gradle\.jvmargs\s*=\s*)(.*)$", content
     )
 
     if not jvm_match:
         additions.append(
-            "org.gradle.jvmargs=-Xmx4g "
-            "-XX:+UseG1GC -Dfile.encoding=UTF-8"
+            "org.gradle.jvmargs=-Xmx4g -XX:+UseG1GC -Dfile.encoding=UTF-8"
         )
     else:
         existing = jvm_match.group(2).strip()
-        heap = re.search(
-            r"-Xmx(\d+)([kmg])?",
-            existing,
-            re.IGNORECASE,
-        )
+        heap = re.search(r"-Xmx(\d+)([kmg])?", existing, re.IGNORECASE)
 
         if not heap:
-            updated = existing + " -Xmx4g"
+            updated = (existing + " -Xmx4g").strip()
             content = (
                 content[:jvm_match.start(2)]
                 + updated
@@ -302,20 +321,10 @@ def _ensure_gradle_properties(
         else:
             size = int(heap.group(1))
             unit = (heap.group(2) or "m").lower()
-
-            if unit == "k":
-                size_mb = size / 1024
-            elif unit == "g":
-                size_mb = size * 1024
-            else:
-                size_mb = size
+            size_mb = size / 1024 if unit == "k" else size * 1024 if unit == "g" else size
 
             if size_mb < 2048:
-                updated = (
-                    existing[:heap.start()]
-                    + "-Xmx4g"
-                    + existing[heap.end():]
-                )
+                updated = existing[:heap.start()] + "-Xmx4g" + existing[heap.end():]
                 content = (
                     content[:jvm_match.start(2)]
                     + updated
@@ -329,16 +338,12 @@ def _ensure_gradle_properties(
     ]
 
     for key, line in defaults:
-        if not re.search(
-            rf"(?m)^\s*{re.escape(key)}\s*=",
-            content,
-        ):
+        if not re.search(rf"(?m)^\s*{re.escape(key)}\s*=", content):
             additions.append(line)
 
     if additions:
         if content and not content.endswith("\n"):
             content += "\n"
-
         content += (
             "# AndroidForge: compatibility defaults\n"
             + "".join(line + "\n" for line in additions)
@@ -380,10 +385,7 @@ def _inject_repositories(
     kotlin = [
         ("google()", "google()"),
         ("mavenCentral()", "mavenCentral()"),
-        (
-            "jitpack.io",
-            'maven { url = uri("https://jitpack.io") }',
-        ),
+        ("jitpack.io", 'maven { url = uri("https://jitpack.io") }'),
     ]
 
     for path in candidates:
@@ -397,7 +399,6 @@ def _inject_repositories(
             continue
 
         match = re.search(r"\brepositories\s*\{", content)
-
         if not match:
             continue
 
@@ -427,19 +428,13 @@ def _inject_repositories(
             index += 1
 
         if depth:
-            applied.append(
-                f"Skipped repository injection in {path}: unmatched braces"
-            )
+            applied.append(f"Skipped repository injection in {path}: unmatched braces")
             continue
 
         close_index = index - 1
         block = content[start:close_index]
         lines = kotlin if path.name.endswith(".kts") else groovy
-
-        additions = [
-            line for marker, line in lines
-            if marker not in block
-        ]
+        additions = [line for marker, line in lines if marker not in block]
 
         if not additions:
             continue
@@ -450,11 +445,7 @@ def _inject_repositories(
             + "    "
         )
 
-        updated = (
-            content[:close_index]
-            + insertion
-            + content[close_index:]
-        )
+        updated = content[:close_index] + insertion + content[close_index:]
 
         try:
             path.write_text(updated, encoding="utf-8")
@@ -470,10 +461,7 @@ def apply_fixes(
 ) -> list[str]:
     applied = []
     root = Path(detect["project_root"]).expanduser().resolve()
-
-    wrapper_properties = (
-        root / "gradle" / "wrapper" / "gradle-wrapper.properties"
-    )
+    wrapper_properties = root / "gradle" / "wrapper" / "gradle-wrapper.properties"
 
     for fix in fixes:
         name = fix["name"]
@@ -486,29 +474,16 @@ def apply_fixes(
                     r"\1https://",
                     content,
                 )
-
                 if updated != content:
-                    wrapper_properties.write_text(
-                        updated, encoding="utf-8"
-                    )
-                    applied.append(
-                        "Migrated Gradle distribution URL to HTTPS"
-                    )
+                    wrapper_properties.write_text(updated, encoding="utf-8")
+                    applied.append("Migrated Gradle distribution URL to HTTPS")
             except OSError as exc:
-                applied.append(
-                    f"Could not update wrapper properties: {exc}"
-                )
+                applied.append(f"Could not update wrapper properties: {exc}")
 
         elif name == "inject_local_properties":
             path = root / "local.properties"
-
             try:
-                content = (
-                    path.read_text(encoding="utf-8")
-                    if path.exists()
-                    else ""
-                )
-
+                content = path.read_text(encoding="utf-8") if path.exists() else ""
                 sdk_line = f"sdk.dir={android_sdk_root}"
 
                 if re.search(r"(?m)^\s*sdk\.dir\s*=", content):
@@ -523,13 +498,9 @@ def apply_fixes(
                     content += sdk_line + "\n"
 
                 path.write_text(content, encoding="utf-8")
-                applied.append(
-                    "Ensured Android SDK path in local.properties"
-                )
+                applied.append("Ensured Android SDK path in local.properties")
             except OSError as exc:
-                applied.append(
-                    f"Could not update local.properties: {exc}"
-                )
+                applied.append(f"Could not update local.properties: {exc}")
 
         elif name == "patch_gradle_wrapper":
             applied.append(
@@ -543,14 +514,9 @@ def apply_fixes(
                 applied,
             )
 
-    _ensure_gradle_properties(
-        root / "gradle.properties",
-        "root gradle.properties",
-        applied,
-    )
+    _ensure_gradle_properties(root / "gradle.properties", "root gradle.properties", applied)
 
     android_dir = root / "android"
-
     if android_dir.is_dir():
         _ensure_gradle_properties(
             android_dir / "gradle.properties",
@@ -561,11 +527,8 @@ def apply_fixes(
     _inject_repositories(
         root,
         applied,
-        is_flutter=bool(
-            (detect.get("flutter") or {}).get("is_flutter")
-        ),
+        is_flutter=bool((detect.get("flutter") or {}).get("is_flutter")),
     )
-
     return applied
 
 
@@ -573,29 +536,22 @@ def read_detection(value: str) -> dict[str, Any]:
     candidate = Path(value)
 
     try:
-        if candidate.is_file():
-            raw = candidate.read_text(encoding="utf-8")
-        else:
-            raw = value
+        raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else value
     except OSError:
         raw = value
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"--detect must be a JSON file path or JSON string: {exc}"
-        ) from exc
+        raise ValueError(f"--detect must be a JSON file path or JSON string: {exc}") from exc
 
     if not isinstance(data, dict):
         raise ValueError("--detect JSON must be an object")
-
     return data
 
 
 def write_github_output(result: dict[str, Any]) -> None:
     output_path = os.environ.get("GITHUB_OUTPUT")
-
     if not output_path:
         return
 
@@ -608,135 +564,67 @@ def write_github_output(result: dict[str, Any]) -> None:
         f"use_wrapper={str(result['use_gradle_wrapper']).lower()}",
     ]
 
-    for key in (
-        "agp_version",
-        "kotlin_version",
-        "ndk_version",
-        "flutter_version",
-    ):
+    for key in ("agp_version", "kotlin_version", "ndk_version", "flutter_version"):
         if result.get(key) is not None:
             lines.append(f"{key}={result[key]}")
 
     delimiter = "ANDROIDFORGE_" + uuid.uuid4().hex
     json_text = json.dumps(result, separators=(",", ":"))
-
     while delimiter in json_text:
         delimiter = "ANDROIDFORGE_" + uuid.uuid4().hex
 
-    lines.extend([
-        f"json<<{delimiter}",
-        json_text,
-        delimiter,
-    ])
+    lines.extend([f"json<<{delimiter}", json_text, delimiter])
 
     try:
         with open(output_path, "a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
     except OSError as exc:
-        raise ValueError(
-            f"Cannot write GitHub Actions output: {exc}"
-        ) from exc
+        raise ValueError(f"Cannot write GitHub Actions output: {exc}") from exc
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="AndroidForge toolchain setup"
-    )
-
+    parser = argparse.ArgumentParser(description="AndroidForge toolchain setup")
     parser.add_argument("--root", required=True, help="Project root path")
-    parser.add_argument(
-        "--detect",
-        required=True,
-        help="Detection JSON string or file path",
-    )
-    parser.add_argument(
-        "--rules",
-        default=None,
-        help="Path to toolchain-rules.yaml",
-    )
+    parser.add_argument("--detect", required=True, help="Detection JSON string or file path")
+    parser.add_argument("--rules", default=None, help="Path to toolchain-rules.yaml")
     parser.add_argument(
         "--android-sdk",
-        default=os.environ.get(
-            "ANDROID_SDK_ROOT",
-            DEFAULT_ANDROID_SDK,
-        ),
+        default=os.environ.get("ANDROID_SDK_ROOT", DEFAULT_ANDROID_SDK),
     )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Write JSON summary to this file",
-    )
-
+    parser.add_argument("--output", default=None, help="Write JSON summary to this file")
     args = parser.parse_args()
 
     try:
-        rules = load_rules(
-            Path(args.rules).expanduser() if args.rules else None
-        )
-
+        rules = load_rules(Path(args.rules).expanduser() if args.rules else None)
         detect = read_detection(args.detect)
         root = Path(args.root).expanduser().resolve()
 
         if not root.is_dir():
-            raise ValueError(
-                f"Project root is not a directory: {root}"
-            )
+            raise ValueError(f"Project root is not a directory: {root}")
 
         detect["project_root"] = str(root)
-
         versions = detect.get("versions") or {}
         wrapper = detect.get("wrapper") or {}
 
-        agp = versions.get("agp_version")
-        wrapper_gradle = wrapper.get("version")
+        agp = detect_agp_version(root, detect)
         kotlin_version = versions.get("kotlin_version")
+        wrapper_gradle = wrapper.get("version")
 
-        agp_jdk = pick_jdk_for_agp(
-            str(agp) if agp else None,
-            rules,
-        )
+        agp_jdk = pick_jdk_for_agp(agp, rules)
         gradle_jdk = pick_jdk_for_gradle(
             str(wrapper_gradle) if wrapper_gradle else None,
             rules,
         )
 
-        # AGP and Gradle runtime requirements both matter.
-        required_jdk = max(
-            major(agp_jdk),
-            major(gradle_jdk),
-        )
+        required_jdk = max(major(agp_jdk), major(gradle_jdk))
+        chosen_jdk = "17" if required_jdk >= 17 else "11" if required_jdk >= 11 else "8"
 
-        if required_jdk >= 17:
-            chosen_jdk = "17"
-        elif required_jdk >= 11:
-            chosen_jdk = "11"
-        else:
-            chosen_jdk = "8"
-
-        # Choose a compatible Gradle version.
-        # An outdated wrapper must not override AGP requirements.
-        def version_tuple(
-            value: str | int | None,
-        ) -> tuple[int, int, int]:
-            parts = [
-                int(part)
-                for part in re.findall(
-                    r"\d+", str(value or "")
-                )[:3]
-            ]
-            return tuple((parts + [0, 0, 0])[:3])
-
-        required_gradle = pick_gradle_for_agp(
-            str(agp) if agp else None,
-            rules,
-        )
+        required_gradle = pick_gradle_for_agp(agp, rules)
 
         wrapper_script = root / (
             "gradlew.bat" if os.name == "nt" else "gradlew"
         )
-        wrapper_jar = (
-            root / "gradle" / "wrapper" / "gradle-wrapper.jar"
-        )
+        wrapper_jar = root / "gradle" / "wrapper" / "gradle-wrapper.jar"
 
         wrapper_usable = (
             bool(wrapper.get("present"))
@@ -748,48 +636,35 @@ def main() -> int:
         wrapper_too_old = (
             wrapper_usable
             and bool(required_gradle)
-            and version_tuple(wrapper_gradle)
-            < version_tuple(required_gradle)
+            and version_tuple(wrapper_gradle) < version_tuple(required_gradle)
         )
 
-        # Use the wrapper only when complete and not too old.
         use_wrapper = wrapper_usable and not wrapper_too_old
 
         if use_wrapper:
             chosen_gradle = str(wrapper_gradle)
+        elif required_gradle:
+            chosen_gradle = required_gradle
+        elif wrapper_gradle:
+            chosen_gradle = str(wrapper_gradle)
         else:
-            chosen_gradle = (
-                required_gradle
-                or (
-                    str(wrapper_gradle)
-                    if wrapper_gradle
-                    else None
-                )
-                or "8.0"
+            # Avoid silently choosing Gradle 8.0 for an unknown AGP version.
+            chosen_gradle = None
+
+        if not chosen_gradle and detect.get("project_type") in ("gradle", "flutter"):
+            raise ValueError(
+                "Could not determine a compatible Gradle version. "
+                "Check AGP detection and config/toolchain-rules.yaml."
             )
 
-        needs_flutter = bool(
-            (detect.get("flutter") or {}).get("is_flutter")
-        )
-        needs_ndk = bool(
-            (detect.get("native") or {}).get("has_native")
-        )
+        needs_flutter = bool((detect.get("flutter") or {}).get("is_flutter"))
+        needs_ndk = bool((detect.get("native") or {}).get("has_native"))
 
-        chosen_flutter = (
-            pick_flutter_version(detect, rules)
-            if needs_flutter else None
-        )
-        chosen_ndk = (
-            pick_ndk_version(detect, rules)
-            if needs_ndk else None
-        )
+        chosen_flutter = pick_flutter_version(detect, rules) if needs_flutter else None
+        chosen_ndk = pick_ndk_version(detect, rules) if needs_ndk else None
 
         fixes = determine_legacy_fixes(detect, rules)
-        applied_fixes = apply_fixes(
-            detect,
-            fixes,
-            args.android_sdk,
-        )
+        applied_fixes = apply_fixes(detect, fixes, args.android_sdk)
 
         if needs_flutter:
             prep_commands = [["flutter", "pub", "get"]]
@@ -798,11 +673,7 @@ def main() -> int:
                 ["flutter", "build", "apk", "--release"],
             ]
         else:
-            gradle_command = (
-                str(wrapper_script)
-                if use_wrapper
-                else "gradle"
-            )
+            gradle_command = str(wrapper_script) if use_wrapper else "gradle"
             prep_commands = []
             build_commands = [
                 [gradle_command, "assembleDebug"],
@@ -830,17 +701,10 @@ def main() -> int:
         }
 
         output = json.dumps(result, indent=2)
-
         if args.output:
             output_path = Path(args.output).expanduser()
-            output_path.parent.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-            output_path.write_text(
-                output + "\n",
-                encoding="utf-8",
-            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(output + "\n", encoding="utf-8")
         else:
             print(output)
 
