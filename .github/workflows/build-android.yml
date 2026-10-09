@@ -3,15 +3,14 @@ name: Build Android APK
 # AndroidForge — Universal Android APK Builder
 #
 # Workflow:
-#   1. Acquire source ZIP (input/ dir, public URL, or GitHub Release asset)
-#   2. Extract ZIP to a clean workspace
-#   3. Detect project type (Gradle / Flutter / multi-module / etc.)
-#   4. Configure toolchain (JDK / Gradle / NDK / Flutter) based on detection
-#   5. Install Android SDK components (caching aggressively)
-#   6. Build the project (assembleDebug / assembleRelease / bundleDebug)
-#   7. Collect generated APKs and pick the primary one
-#   8. Upload APK as a GitHub Actions artifact
-#   9. On failure, run automated diagnosis
+#   1. Acquire source ZIP
+#   2. Extract ZIP
+#   3. Detect project type
+#   4. Configure toolchain
+#   5. Install Android SDK components
+#   6. Build project
+#   7. Collect APKs and upload artifacts
+#   8. Diagnose failures
 
 on:
   workflow_dispatch:
@@ -26,7 +25,7 @@ on:
           - "download-url"
           - "release-asset"
       zip_path:
-        description: "Exact path (relative to repo root) of the source ZIP in input/. Required when zip_source=input-directory and multiple ZIPs are present — otherwise the build picks the wrong one."
+        description: "Exact path (relative to repo root) of the source ZIP in input/."
         required: false
         type: string
         default: ""
@@ -55,16 +54,14 @@ on:
         type: boolean
         required: false
         default: false
+
   push:
     branches:
       - main
     paths:
       - "input/**.zip"
 
-# Never expose secrets to the (untrusted) uploaded source ZIP.
-# contents:write is required so the GITHUB_TOKEN can upload the built APK
-# back to the source release as an asset — that's what lets the Pages UI
-# offer a direct download link (no CORS issues, no auth header dance).
+# Never expose secrets to the untrusted uploaded source ZIP.
 permissions:
   contents: write
   actions: write
@@ -108,9 +105,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # ---------------------------------------------------------------------
       # Step 1: Acquire ZIP
-      # ---------------------------------------------------------------------
       - name: Acquire source ZIP
         id: acquire
         run: |
@@ -120,16 +115,12 @@ jobs:
             --tag "${{ inputs.release_tag }}" \
             --path "${{ inputs.zip_path }}"
 
-      # ---------------------------------------------------------------------
       # Step 2: Extract ZIP
-      # ---------------------------------------------------------------------
       - name: Extract source ZIP
         id: extract
         run: python scripts/extract_zip.py --zip "${{ steps.acquire.outputs.zip_path }}"
 
-      # ---------------------------------------------------------------------
-      # Step 3: Detect project (writes detection.json)
-      # ---------------------------------------------------------------------
+      # Step 3: Detect project
       - name: Detect project type
         id: detect
         run: |
@@ -140,9 +131,7 @@ jobs:
           cat detection.json
           echo "::endgroup::"
 
-      # ---------------------------------------------------------------------
-      # Step 4: Configure toolchain (writes toolchain.json)
-      # ---------------------------------------------------------------------
+      # Step 4: Configure toolchain
       - name: Configure toolchain
         id: toolchain
         run: |
@@ -155,9 +144,7 @@ jobs:
           cat toolchain.json
           echo "::endgroup::"
 
-      # ---------------------------------------------------------------------
-      # Step 5: Install JDK (chosen dynamically by setup step)
-      # ---------------------------------------------------------------------
+      # Step 5: Install JDK
       - name: Set up JDK (detected version)
         uses: actions/setup-java@v4
         with:
@@ -172,21 +159,14 @@ jobs:
           distribution: "temurin"
           java-version: "8"
 
-      # ---------------------------------------------------------------------
       # Step 6: Set up Android SDK
-      # NOTE: android-actions/setup-android@v3 has a bug where multi-line
-      # YAML `packages:` input is passed to sdkmanager as a single argument
-      # containing embedded newlines, causing it to fail. We work around this
-      # by passing packages as a single space-separated string.
-      # We also continue-on-error and re-run via sdkmanager directly if the
-      # action fails — that way the build keeps going.
-      # ---------------------------------------------------------------------
+      # Include SDK 35 because the detected project uses compileSdk/targetSdk 35.
       - name: Set up Android SDK (action)
         id: sdk_action
         continue-on-error: true
         uses: android-actions/setup-android@v3
         with:
-          packages: "platform-tools build-tools;34.0.0 build-tools;33.0.2 build-tools;32.0.0 build-tools;30.0.3 platforms;android-34 platforms;android-33 platforms;android-31 platforms;android-30 platforms;android-29 platforms;android-28 platforms;android-26 platforms;android-25"
+          packages: "platform-tools build-tools;35.0.0 build-tools;34.0.0 build-tools;33.0.2 build-tools;32.0.0 build-tools;30.0.3 platforms;android-35 platforms;android-34 platforms;android-33 platforms;android-31 platforms;android-30 platforms;android-29 platforms;android-28 platforms;android-26 platforms;android-25"
 
       - name: Set up Android SDK (fallback via sdkmanager)
         if: steps.sdk_action.outcome == 'failure'
@@ -196,13 +176,20 @@ jobs:
           if [ ! -x "$SDKMGR" ]; then
             SDKMGR=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
           fi
+          if [ -z "$SDKMGR" ] || [ ! -x "$SDKMGR" ]; then
+            echo "::error::sdkmanager was not found in Android SDK."
+            exit 1
+          fi
           echo "Using sdkmanager at: $SDKMGR"
+          yes | "$SDKMGR" --licenses >/dev/null || true
           for pkg in \
             "platform-tools" \
+            "build-tools;35.0.0" \
             "build-tools;34.0.0" \
             "build-tools;33.0.2" \
             "build-tools;32.0.0" \
             "build-tools;30.0.3" \
+            "platforms;android-35" \
             "platforms;android-34" \
             "platforms;android-33" \
             "platforms;android-31" \
@@ -212,13 +199,14 @@ jobs:
             "platforms;android-26" \
             "platforms;android-25"; do
             echo "Installing $pkg..."
-            yes | "$SDKMGR" "$pkg" >/tmp/sdk-install.log 2>&1 || echo "WARNING: install of $pkg failed (may already be present)"
+            yes | "$SDKMGR" "$pkg" >/tmp/sdk-install.log 2>&1 || {
+              echo "WARNING: install of $pkg failed; last output:"
+              tail -30 /tmp/sdk-install.log || true
+            }
           done
           echo "SDK fallback setup complete."
 
-      # ---------------------------------------------------------------------
       # Step 7: Install NDK if needed
-      # ---------------------------------------------------------------------
       - name: Install NDK (detected version)
         if: steps.toolchain.outputs.needs_ndk == 'true' || github.event.inputs.enable_ndk == 'true'
         run: |
@@ -227,12 +215,11 @@ jobs:
             SDKMGR=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
           fi
           echo "Installing NDK ${{ steps.toolchain.outputs.ndk_version }}"
+          yes | "$SDKMGR" --licenses >/dev/null || true
           yes | "$SDKMGR" "ndk;${{ steps.toolchain.outputs.ndk_version }}" || true
           yes | "$SDKMGR" "cmake;3.22.1" || true
 
-      # ---------------------------------------------------------------------
-      # Step 8: Set up Flutter (if needed)
-      # ---------------------------------------------------------------------
+      # Step 8: Set up Flutter if needed
       - name: Set up Flutter
         if: steps.toolchain.outputs.needs_flutter == 'true'
         uses: subosito/flutter-action@v2
@@ -241,9 +228,7 @@ jobs:
           channel: "stable"
           cache: true
 
-      # ---------------------------------------------------------------------
-      # Step 9: Install standalone Gradle (used if wrapper is missing)
-      # ---------------------------------------------------------------------
+      # Step 9: Install standalone Gradle if wrapper is missing
       - name: Install standalone Gradle (fallback)
         if: steps.toolchain.outputs.use_wrapper == 'false'
         run: |
@@ -253,9 +238,7 @@ jobs:
           unzip -q /tmp/gradle.zip -d /opt
           echo "/opt/gradle-${GRADLE_VER}/bin" >> "$GITHUB_PATH"
 
-      # ---------------------------------------------------------------------
-      # Step 10: Cache Gradle dependencies & wrapper
-      # ---------------------------------------------------------------------
+      # Step 10: Cache Gradle dependencies and wrapper
       - name: Cache Gradle dependencies
         if: steps.toolchain.outputs.needs_gradle == 'true'
         uses: actions/cache@v4
@@ -269,9 +252,7 @@ jobs:
             gradle-${{ steps.toolchain.outputs.gradle_version }}-
             gradle-
 
-      # ---------------------------------------------------------------------
-      # Step 11: Build the project (writes build.json)
-      # ---------------------------------------------------------------------
+      # Step 11: Build project
       - name: Build project
         id: build
         continue-on-error: true
@@ -283,15 +264,12 @@ jobs:
             --variant "${{ inputs.build_variant || 'auto' }}" \
             --log-dir "$GITHUB_WORKSPACE/.androidforge/logs" \
             --output "$GITHUB_WORKSPACE/build.json" || true
-          # Always emit a minimal build.json if the script didn't write one
           if [ ! -f "$GITHUB_WORKSPACE/build.json" ]; then
             echo '{"build_succeeded": false, "successful_command": null, "exit_code": -1, "log_file": null}' > "$GITHUB_WORKSPACE/build.json"
           fi
           cat "$GITHUB_WORKSPACE/build.json"
 
-      # ---------------------------------------------------------------------
-      # Step 12: Collect APKs (writes collect.json; runs even on build failure)
-      # ---------------------------------------------------------------------
+      # Step 12: Collect APKs
       - name: Collect APKs
         id: collect
         if: always()
@@ -306,9 +284,7 @@ jobs:
           fi
           cat "$GITHUB_WORKSPACE/collect.json"
 
-      # ---------------------------------------------------------------------
       # Step 13: Upload APK artifact
-      # ---------------------------------------------------------------------
       - name: Upload APK artifact
         if: steps.collect.outputs.apk_count != '0' && steps.collect.outputs.apk_count != ''
         uses: actions/upload-artifact@v4
@@ -328,49 +304,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      # ---------------------------------------------------------------------
-      # Step 14: ALWAYS publish APKs to a fresh output release (tag derived
-      # from the run id, so the Pages UI can fetch it predictably). This
-      # step runs server-side on the GitHub runner — no CORS issues, no
-      # browser uploads. The UI then fetches the release's asset list via
-      # api.github.com (CORS-enabled) and offers direct download links to
-      # the regular GitHub navigation URLs.
-      # ---------------------------------------------------------------------
+      # Step 14: Publish APKs to an output release
       - name: Publish APKs to output release
         if: always() && steps.collect.outputs.apk_count != '0' && steps.collect.outputs.apk_count != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="web-build-output-${{ github.run_id }}"
-          echo "Creating release with tag $TAG…"
+          echo "Creating release with tag $TAG..."
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target main \
             --title "Build #${{ github.run_number }} output" \
             --notes "Auto-generated by AndroidForge workflow run ${{ github.run_id }}." \
             --prerelease || true
-          echo "Uploading built APKs/AABs to release $TAG…"
+          echo "Uploading built APKs/AABs to release $TAG..."
           cd "$GITHUB_WORKSPACE/output"
           shopt -s nullglob
           for f in *.apk *.aab; do
-            echo "  → $f"
+            echo "  -> $f"
             gh release upload "$TAG" "$f" --clobber --repo "$GITHUB_REPOSITORY" || echo "WARNING: upload of $f failed"
           done
           echo "Done. Release $TAG now contains the built APKs."
-          # Surface the tag to downstream steps and to the workflow summary.
           echo "output_release_tag=$TAG" >> "$GITHUB_ENV"
           echo "output_release_tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "## 📦 Output release" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Tag: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "URL: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Assets:" >> "$GITHUB_STEP_SUMMARY"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Output release"
+            echo ""
+            echo "Tag: \`$TAG\`"
+            echo "URL: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo ""
+            echo "Assets:"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # ---------------------------------------------------------------------
-      # Step 15: Upload build logs (always, for debugging)
-      # ---------------------------------------------------------------------
+      # Step 15: Upload build logs
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -384,9 +352,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # ---------------------------------------------------------------------
-      # Step 15: Diagnose failure (only on build failure)
-      # ---------------------------------------------------------------------
+      # Step 16: Diagnose failure
       - name: Diagnose failure
         if: steps.build.outputs.build_succeeded != 'true'
         run: |
@@ -394,9 +360,7 @@ jobs:
             --root "${{ steps.extract.outputs.project_root }}" \
             --log-dir "$GITHUB_WORKSPACE/.androidforge/logs" || true
 
-      # ---------------------------------------------------------------------
-      # Step 16: Build summary (always)
-      # ---------------------------------------------------------------------
+      # Step 17: Build summary
       - name: Build summary
         if: always()
         run: |
@@ -406,9 +370,7 @@ jobs:
             --build "$GITHUB_WORKSPACE/build.json" \
             --collect "$GITHUB_WORKSPACE/collect.json" || true
 
-      # ---------------------------------------------------------------------
       # Final: fail the job if the build itself failed
-      # ---------------------------------------------------------------------
       - name: Fail if build failed
         if: steps.build.outputs.build_succeeded != 'true'
         run: |
